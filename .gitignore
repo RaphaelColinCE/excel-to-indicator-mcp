@@ -21,7 +21,7 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-PIPFFILE.lock
+PIPFILE.lock
 
 # Virtual environments
 venv/
