@@ -53,6 +53,8 @@ class ConversionService:
             ConversionResult avec la formule mappée et les métadonnées
         """
         try:
+            from src.services.excel_converter import ExcelConverterService
+            formula = ExcelConverterService._simplify_selfinyear(formula)
             parsed = parse_formula(formula, sheet, cell, file_path)
             return self._convert_parsed(parsed)
         except Exception as e:

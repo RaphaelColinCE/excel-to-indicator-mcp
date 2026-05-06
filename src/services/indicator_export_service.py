@@ -195,9 +195,9 @@ class IndicatorExportService:
                 data_type = detail.get("data_type", "REAL")
 
             # Si la formule contient encore des refs Excel brutes (pas résolues),
-            # laisser vide pour ne pas bloquer l'import dans l'application.
-            if _raw_cell_re.search(formula):
-                formula = ""
+            # mettre "0" pour permettre l'import sans erreur.
+            if _raw_cell_re.search(formula) or not formula.strip():
+                formula = "0"
 
             formula_esc = (
                 formula.replace("&", "&amp;")
@@ -391,6 +391,7 @@ class IndicatorExportService:
         # ── 8. Transformer les lignes #CELL ──────────────────────────────────
         for orig_r, config in cell_configs.items():
             nr = new_row(orig_r)
+            is_dyn_cell = (orig_r == dyn_cell_row_orig)
 
             for orig_c, cv_str in config.items():
                 nc = new_col(orig_c)
@@ -400,15 +401,17 @@ class IndicatorExportService:
                     _set_cell(ws, nr, nc, "Dimension:SRF_LEI;")
                     continue
 
-                # Priorité 1 : code issu de la ligne header (#DATA juste avant #DATA_DYNAMIQUE)
+                # Pour la ligne #CELL dynamique uniquement : utiliser en priorité
+                # le code de la ligne header (#DATA juste avant #DATA_DYNAMIQUE)
                 # Ex: S0DE_DGS_2A3 → Indicator[XBRL]:CMGT_dgs__C02A3$;
-                header_code = header_col_codes.get(orig_c)
-                if header_code:
-                    full, cls = self._resolve_full_name(header_code)
-                    _set_cell(ws, nr, nc, f"Indicator[{cls}]:{full};")
-                    continue
+                if is_dyn_cell:
+                    header_code = header_col_codes.get(orig_c)
+                    if header_code:
+                        full, cls = self._resolve_full_name(header_code)
+                        _set_cell(ws, nr, nc, f"Indicator[{cls}]:{full};")
+                        continue
 
-                # Priorité 2 : code extrait du contenu OUTPUTMCCOMP
+                # Extraction du code via OUTPUTMCCOMP / INPUTMCCOMP
                 mc_m = _MC_COMP_RE.search(cv_str)
                 if not mc_m:
                     _set_cell(ws, nr, nc, None)
