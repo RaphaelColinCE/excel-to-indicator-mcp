@@ -1,0 +1,168 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Indicators xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <CustomIndicators>
+    <Indicator>
+      <Code>S1CRU1_LUMPS</Code>
+      <Label>S1CRU1_LUMPS</Label>
+      <RowCode />
+      <ColumnCode />
+      <IndicatorType>CUSTOM</IndicatorType>
+      <DataType>MONETARY</DataType>
+      <Formula>IF(
+    OR(fact[IndicatorName="S1CRU1_TLCDO";endDate=?; SRF_LEI=?].value="";
+    fact[IndicatorName="S0DE_SmallAndRisky_S0DE_SR_YN_$"; endDate=?; SRF_LEI=?].value="");"";
+IF(
+OR(
+RIGHT(fact[IndicatorName="S0DE_SmallAndRisky_S0DE_SR_YN_$"; endDate=?; SRF_LEI=?].value;2)="x2";
+fact[IndicatorName="S0DE_SmallAndRisky_S0DE_SR_YN_$"; endDate=?; SRF_LEI=?].value="No"
+);
+IF(
+OR(
+RIGHT(fact[IndicatorName="EACIND_f01_R01C8_C0001"; endDate=?; SRF_LEI=?].value;2)="x1";
+fact[IndicatorName="EACIND_f01_R01C8_C0001"; endDate=?; SRF_LEI=?].value="Yes"
+);
+IF(
+AND(
+fact[IndicatorName="S0PARA_TALEC"; endDate=?].value=0;
+fact[IndicatorName="S0PARA_FIXTL"; endDate=?].value=0;
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=300000000
+);
+0;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=50000000;1000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=100000000;2000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=150000000;7000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=200000000;15000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=250000000;26000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=300000000;50000;
+""
+)))))));
+IF(
+fact[IndicatorName="EACIND_f02_R02A1_C0001"; endDate=?; SRF_LEI=?].value&lt;1000000000;
+IF(
+AND(
+fact[IndicatorName="S0PARA_TALEC"; endDate=?].value=0;
+fact[IndicatorName="S0PARA_FIXTL"; endDate=?].value=0;
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=300000000
+);
+0;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=50000000;1000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=100000000;2000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=150000000;7000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=200000000;15000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=250000000;26000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=300000000;50000;
+""
+)))))));
+""
+));
+""))</Formula>
+    </Indicator>
+    <Indicator>
+      <Code>S1CRU1_TLCDO</Code>
+      <Label>S1CRU1_TLCDO</Label>
+      <RowCode />
+      <ColumnCode />
+      <IndicatorType>CUSTOM</IndicatorType>
+      <DataType>REAL</DataType>
+      <Formula>fact[IndicatorName="EACIND_f02_R02A1_C0001"; SRF_LEI=?; endDate=?].value - fact[IndicatorName="EACIND_f02_R02A2_C0001"; SRF_LEI=?; endDate=?].value - fact[IndicatorName="EACIND_f02_R02A3_C0001"; SRF_LEI=?; endDate=?].value</Formula>
+    </Indicator>
+	<Indicator>
+      <Code>S1CRU1_LSTHE</Code>
+      <Label>S1CRU1_LSTHE</Label>
+      <RowCode />
+      <ColumnCode />
+      <IndicatorType>CUSTOM</IndicatorType>
+      <DataType>REAL</DataType>
+<Formula>IF(
+OR(fact[IndicatorName="S1CRU1_TLCDO";endDate=?; SRF_LEI=?].value="";
+fact[IndicatorName="S0DE_SmallAndRisky_S0DE_SR_YN_$"; endDate=?; SRF_LEI=?].value="");"";
+IF(
+OR(
+RIGHT(fact[IndicatorName="S0DE_SmallAndRisky_S0DE_SR_YN_$"; endDate=?; SRF_LEI=?].value;2)="x1";
+fact[IndicatorName="S0DE_SmallAndRisky_S0DE_SR_YN_$"; endDate=?; SRF_LEI=?].value="Yes"
+);
+IF(
+OR(
+RIGHT(fact[IndicatorName="EACIND_f01_R01C8_C0001";  endDate=?; SRF_LEI=?].value;2)="x1";
+fact[IndicatorName="EACIND_f01_R01C8_C0001"; endDate=?; SRF_LEI=?].value="Yes"
+);
+IF(
+AND(
+fact[IndicatorName="S0PARA_TALEC"; endDate=?].value=0;
+fact[IndicatorName="S0PARA_FIXTL"; endDate=?].value=0;
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value &lt;= 300000000
+);
+0;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=50000000;1000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=100000000;2000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=150000000;7000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=200000000;15000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=250000000;26000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=300000000;50000;
+""
+)
+)
+)
+)
+)
+)
+);
+IF(
+fact[IndicatorName="EACIND_f02_R02A1_C0001"; endDate=?; SRF_LEI=?].value&lt;1000000000;
+IF(
+AND(
+fact[IndicatorName="S0PARA_TALEC"; endDate=?].value=0;
+fact[IndicatorName="S0PARA_FIXTL"; endDate=?].value=0;
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=300000000
+);
+0;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=50000000;1000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=100000000;2000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=150000000;7000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=200000000;15000;
+IF(
+fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=250000000;26000;
+IF(
+	fact[IndicatorName="S1CRU1_TLCDO"; endDate=?; SRF_LEI=?].value&lt;=300000000;50000;
+	""
+)
+)
+)
+)
+)
+)
+);
+""
+)
+);
+""
+)
+)</Formula>
+    </Indicator>
+  </CustomIndicators>
+  <RSIndicators />
+  <AnalyzerIndicators />
+  <XBRLIndicators />
+</Indicators>

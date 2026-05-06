@@ -42,11 +42,10 @@ env/
 .env.local
 .env.*.local
 
-# Data files (non-example)
+# Data files (non-example) — exclure le contenu mais garder la structure
 data/actual/**
-!data/actual/.gitkeep
-!data/actual/mappings/.gitkeep
-!data/actual/excel_sources/.gitkeep
+!data/actual/**/
+!data/actual/**/.gitkeep
 
 # Logs
 logs/

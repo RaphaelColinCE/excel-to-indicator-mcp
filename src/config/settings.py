@@ -24,6 +24,12 @@ class Settings:
     MAPPING_FILE: Path = Path(
         os.getenv("MCP_MAPPING_FILE", str(MAPPING_DIR / "mapping.json"))
     )
+    INDICATORS_DIR: Path = Path(
+        os.getenv("MCP_INDICATORS_DIR", str(DATA_DIR / "actual" / "indicators"))
+    )
+    OUTPUT_DIR: Path = Path(
+        os.getenv("MCP_OUTPUT_DIR", str(DATA_DIR / "actual" / "output"))
+    )
     LOG_DIR: Path = PROJECT_ROOT / "logs"
     LOG_FILE: Path = Path(os.getenv("MCP_LOG_FILE", str(LOG_DIR / "mcp.log")))
 
@@ -48,6 +54,8 @@ class Settings:
         """Créer les répertoires s'ils n'existent pas"""
         cls.EXCEL_SOURCES_DIR.mkdir(parents=True, exist_ok=True)
         cls.MAPPING_DIR.mkdir(parents=True, exist_ok=True)
+        cls.INDICATORS_DIR.mkdir(parents=True, exist_ok=True)
+        cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         cls.LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     @classmethod
