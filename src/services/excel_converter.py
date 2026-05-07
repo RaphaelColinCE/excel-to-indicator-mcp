@@ -401,6 +401,35 @@ class ExcelConverterService:
                 ref_map[f"${col}${data_row}"] = indicator  # Écrase si déjà présent
                 ref_map[f"{col}{data_row}"] = indicator
 
+        # Post-processing : dédupliquer les noms d'indicateurs assignés à des cellules
+        # différentes. Ex: S6DCAC_FCONT assigné à BP37, BR37, BS37 → BP37 garde le nom,
+        # BR37 → S6DCAC_FCONT_2, BS37 → S6DCAC_FCONT_3.
+        # On ne traite que les clés absolues ($COL$ROW) pour éviter les doublons
+        # entre clé absolue et relative du même mapping.
+        abs_keys = [k for k in ref_map if k.startswith("$")]
+        name_to_first_abs: dict[str, str] = {}  # premier abs_key qui a ce nom
+        name_counter: dict[str, int] = {}
+        for abs_key in sorted(abs_keys):
+            name = ref_map[abs_key]
+            if name not in name_to_first_abs:
+                name_to_first_abs[name] = abs_key
+            else:
+                # Doublon : générer un suffixe unique
+                count = name_counter.get(name, 2)
+                new_name = f"{name}_{count}"
+                while new_name in name_to_first_abs:
+                    count += 1
+                    new_name = f"{name}_{count}"
+                name_counter[name] = count + 1
+                name_to_first_abs[new_name] = abs_key
+                # Mettre à jour les deux formes de clé dans ref_map
+                ref_map[abs_key] = new_name
+                # Clé relative : extraire COL+ROW depuis $COL$ROW
+                parts = abs_key.lstrip("$").split("$")
+                if len(parts) == 2:
+                    ref_map[f"{parts[0]}{parts[1]}"] = new_name
+                logger.debug("Dédupliqué: %s → %s (cellule %s)", name, new_name, abs_key)
+
         return ref_map
 
     # ─────────────────────────────────────────────────────────────────────────
