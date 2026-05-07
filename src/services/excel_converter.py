@@ -36,6 +36,16 @@ _RANGE_REF_RE = re.compile(
 # Extraction de l'indicateur dans une cellule #CELL de configuration
 _MC_COMP_RE = re.compile(r"(?:OUTPUT|INPUT)MCCOMP:\{[^}]*\}([^;\n]+)")
 
+# Formules à ignorer pour la génération d'indicateurs intermédiaires.
+# Ces fonctions retournent des métadonnées de contexte (entité, pays) inutiles
+# dans les formules d'indicateurs finales.
+_IGNORED_INTERMEDIATE_FORMULAS: frozenset[str] = frozenset([
+    "SELCOMPANY()",
+    "@SELCOMPANY()",
+    'DOCUMENTVARIABLE_LABEL_UNIQUE("CC")',
+    '@DOCUMENTVARIABLE_LABEL_UNIQUE("CC")',
+])
+
 # Post-processing : SUM(fact[...].value ...) → contenu sans wrapper SUM.
 # Gère également les multi-plages séparées par ";" :
 #   SUM(fact[A].value + fact[B].value; fact[C].value + fact[D].value)
@@ -125,28 +135,64 @@ class ExcelConverterService:
 
         # 3. Identifier les colonnes de sortie (nouveaux indicateurs)
         results: list[dict] = []
+
+        # Pre-scan : générer les indicateurs intermédiaires pour les cellules
+        # de formula_row qui ont une formule mais pas d'en-tête de colonne connu.
+        # Ces cellules sont dynamiques (formula_row = ligne dynamique principale).
+        _used_names: set[str] = set(cell_ref_map.values())
+        _intermediate_keys: set[str] = set()
+        for _cell in ws[formula_row]:
+            if not _cell.value or not str(_cell.value).startswith("="):
+                continue
+            # Ignorer les formules de métadonnées (entité, pays)
+            _formula_body = str(_cell.value)[1:].strip()
+            if _formula_body in _IGNORED_INTERMEDIATE_FORMULAS:
+                continue
+            _col = _cell.column_letter
+            if col_header.get(_col):
+                continue  # Colonne avec indicateur connu, pas intermédiaire
+            _abs_key = f"${_col}${formula_row}"
+            if _abs_key in cell_ref_map:
+                continue
+            _label = self._find_cell_label_in_ws(ws, formula_row, _cell.column)
+            _short = self._make_label_short(_label, 8) if _label else _col.upper()
+            _base = f"{sheet_name}_{_short}_$"
+            _name = _base
+            _ctr = 2
+            while _name in _used_names:
+                _name = f"{_base}{_ctr}"
+                _ctr += 1
+            _used_names.add(_name)
+            cell_ref_map[_abs_key] = _name
+            cell_ref_map[f"{_col}{formula_row}"] = _name
+            _intermediate_keys.add(_abs_key)
+
         for cell in ws[formula_row]:
             raw = cell.value
             if not raw or not str(raw).startswith("="):
                 continue
 
             col = cell.column_letter
+            abs_key = f"${col}${formula_row}"
             header_code = col_header.get(col)
-            if not header_code:
-                continue  # Pas d'en-tête de colonne connu
 
-            # Filtre : est-ce un indicateur de sortie ?
-            if output_columns is not None:
-                if col not in output_columns:
-                    continue
+            if header_code:
+                indicator_name = header_code
+                is_intermediate = False
+                # Filtre : est-ce un indicateur de sortie ?
+                if output_columns is not None:
+                    if col not in output_columns:
+                        continue
+                else:
+                    if header_code in self.mapping:
+                        continue
+            elif abs_key in _intermediate_keys:
+                indicator_name = cell_ref_map[abs_key]
+                is_intermediate = True
             else:
-                # Par défaut : inclure si l'en-tête n'est pas dans le mapping
-                if header_code in self.mapping:
-                    continue
+                continue  # Pas d'en-tête et pas intermédiaire connu
 
             formula_text = str(raw)[1:]  # retirer le "="
-            indicator_name = header_code  # l'indicateur créé = le code de la colonne
-
             converted = self._convert_formula(
                 formula_text, col_header, cell_ref_map, formula_row
             )
@@ -158,6 +204,7 @@ class ExcelConverterService:
                     "source_formula": formula_text,
                     "indicator_name": indicator_name,
                     "indicator_formula": converted,
+                    "intermediate": is_intermediate,
                 }
             )
 
@@ -213,6 +260,13 @@ class ExcelConverterService:
         results: list[dict] = []
         max_col = ws.max_column
 
+        # Pre-scan : générer les indicateurs intermédiaires (cellules avec formule
+        # mais sans entrée dans cell_ref_map) AVANT la boucle principale,
+        # afin que les formules qui les référencent puissent les résoudre.
+        intermediate_keys = self._prescan_intermediate_cells(
+            ws, sheet_name, cell_ref_map, institution_row
+        )
+
         for row_num in range(1, ws.max_row + 1):
             a_val = ws.cell(row=row_num, column=1).value
             if not isinstance(a_val, str) or not a_val.startswith("#DATA"):
@@ -243,8 +297,10 @@ class ExcelConverterService:
                 if not indicator_name:
                     continue
 
-                # Garder uniquement si c'est un NOUVEL indicateur (pas dans mapping)
-                if indicator_name in self.mapping:
+                is_intermediate = abs_key in intermediate_keys
+
+                # Pour les indicateurs connus du mapping : skip sauf si intermédiaire
+                if indicator_name in self.mapping and not is_intermediate:
                     continue
 
                 formula_text = str(raw)[1:]
@@ -259,15 +315,12 @@ class ExcelConverterService:
                         "source_formula": formula_text,
                         "indicator_name": indicator_name,
                         "indicator_formula": converted,
+                        "intermediate": is_intermediate,
                     }
                 )
 
-                # Auto-registration : ajouter le nouvel indicateur au cell_ref_map
-                # pour que les formules suivantes puissent le référencer par $COL$ROW.
-                # Ex: BK37 → S1CRUF_LSAMO devient résolvable dans SUM(BK37:BK39).
-                # On ne l'ajoute PAS au mapping permanent (il reste un output indicator).
-                # La clé relative (COL+ROW) est déjà présente ; on s'assure
-                # que la version absolue ($COL$ROW) est aussi enregistrée.
+                # Auto-registration : s'assurer que les clés absolues et relatives
+                # sont toutes deux enregistrées pour les formules suivantes.
                 cell_ref_map[abs_key] = indicator_name
                 cell_ref_map[f"{col}{row_num}"] = indicator_name
 
@@ -349,6 +402,88 @@ class ExcelConverterService:
                 ref_map[f"{col}{data_row}"] = indicator
 
         return ref_map
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Indicateurs intermédiaires (cellules sans header = calcul interne)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_label_short(label: str, max_len: int = 8) -> str:
+        """Construire un code court à partir d'un label (alphanum, uppercase)."""
+        clean = re.sub(r"[^A-Za-z0-9]", "", label)
+        result = clean[:max_len].upper()
+        return result if result else "X"
+
+    @staticmethod
+    def _find_cell_label_in_ws(ws, row_num: int, col_idx: int) -> Optional[str]:
+        """Remonter les lignes pour trouver un label textuel pour une colonne donnée."""
+        for dr in range(1, 12):
+            r = row_num - dr
+            if r < 1:
+                break
+            v = ws.cell(row=r, column=col_idx).value
+            if v is None:
+                continue
+            sv = str(v).strip()
+            if not sv or sv.startswith("#") or sv.startswith("="):
+                continue
+            # Ignorer les codes indicateurs purs (ex: S1CRU2_TARG1)
+            if re.match(r"^[A-Z][A-Z0-9_]+$", sv):
+                continue
+            return sv
+        return None
+
+    def _prescan_intermediate_cells(
+        self,
+        ws,
+        sheet_name: str,
+        cell_ref_map: dict[str, str],
+        institution_row: Optional[int],
+    ) -> set[str]:
+        """Identifier les cellules intermédiaires et les ajouter à cell_ref_map.
+
+        Une cellule est intermédiaire si elle contient une formule mais n'a pas
+        d'indicateur dans cell_ref_map (pas de OUTPUTMCCOMP / header connu).
+        Nom généré : {sheet_name}_{LabelShort}[_$] (avec _$ si ligne dynamique).
+        Retourne l'ensemble des clés absolues ($COL$ROW) des cellules intermédiaires.
+        """
+        intermediate_keys: set[str] = set()
+        used_names: set[str] = set(cell_ref_map.values())
+        max_col = ws.max_column
+
+        for row_num in range(1, ws.max_row + 1):
+            a_val = ws.cell(row=row_num, column=1).value
+            if not isinstance(a_val, str) or not a_val.startswith("#DATA"):
+                continue
+            is_dynamic = row_num == institution_row
+            for col_idx in range(1, max_col + 1):
+                raw = ws.cell(row=row_num, column=col_idx).value
+                if not raw or not str(raw).startswith("="):
+                    continue
+                # Ignorer les formules de métadonnées (entité, pays)
+                formula_body = str(raw)[1:].strip()
+                if formula_body in _IGNORED_INTERMEDIATE_FORMULAS:
+                    continue
+                col = ws.cell(row=row_num, column=col_idx).column_letter
+                abs_key = f"${col}${row_num}"
+                if abs_key in cell_ref_map:
+                    continue  # Déjà connu, pas intermédiaire
+                label = self._find_cell_label_in_ws(ws, row_num, col_idx)
+                short = self._make_label_short(label, 8) if label else col.upper()
+                suffix = "_$" if is_dynamic else ""
+                base_name = f"{sheet_name}_{short}{suffix}"
+                # Éviter les doublons
+                name = base_name
+                ctr = 2
+                while name in used_names:
+                    name = f"{base_name}{ctr}"
+                    ctr += 1
+                used_names.add(name)
+                cell_ref_map[abs_key] = name
+                cell_ref_map[f"{col}{row_num}"] = name
+                intermediate_keys.add(abs_key)
+
+        return intermediate_keys
 
     # ─────────────────────────────────────────────────────────────────────────
     # Simplification SELFINYEAR

@@ -684,6 +684,8 @@ async def handle_call_tool(
             ws_out.append(headers)
             for rec in records:
                 status = _formula_status(rec["indicator_formula"])
+                if rec.get("intermediate"):
+                    status = status + "_INT"
                 ws_out.append([rec["source_excel_sheet"], rec["source_cell"], rec["source_formula"],
                                 rec["indicator_name"], rec["indicator_formula"], status])
             wb_out.save(out_path)
