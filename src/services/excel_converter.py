@@ -55,6 +55,12 @@ _SUM_FACT_RE = re.compile(
     r'(?:\s*;\s*fact\[[^\]]+\]\.value(?:\s*\+\s*fact\[[^\]]+\]\.value)*)*)\)'
 )
 
+# Post-processing : RANK(arg1;list_fact;order) → RANK(arg1;{list_fact};order)
+# La liste (2ème arg) est un fact sans SRF_LEI → doit être entourée de {}.
+_RANK_LIST_RE = re.compile(
+    r'RANK\((fact\[[^\]]+\]\.value);(fact\[[^\]]+\]\.value);(\d+)\)'
+)
+
 # Post-processing : COUNTIF résolus (plage → fact) en LIST_COUNT.
 # Trois formes de critère :
 #   1. String simple    : "LPS"   → value="LPS"
@@ -715,7 +721,10 @@ class ExcelConverterService:
             result
         )
 
-        # Post-processing 2 : COUNTIF(fact[...].value;critère) → LIST_COUNT({fact[...;SRF_LEI=?;...].value})
+        # Post-processing 2 : RANK(arg1;list_fact;order) → RANK(arg1;{list_fact};order)
+        result = _RANK_LIST_RE.sub(r'RANK(\1;{\2};\3)', result)
+
+        # Post-processing 3 : COUNTIF(fact[...].value;critère) → LIST_COUNT({fact[...;SRF_LEI=?;...].value})
         # Forme 1 : critère string simple "LPS" → value="LPS"
         result = _COUNTIF_STR_RE.sub(
             r'LIST_COUNT({fact[\1; SRF_LEI=?; value="\2"].value})', result
