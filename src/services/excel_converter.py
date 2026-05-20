@@ -76,6 +76,16 @@ _COUNTIF_CMP_CONCAT_RE = re.compile(
     r'COUNTIF\(fact\[([^\]]+?)\]\.value;"(>=|<=|<>|>|<)"&([^;)]+)\)'
 )
 
+# Post-processing : concaténation Excel via opérateur '&' vers CONCATENATE(x;y).
+# Couvre les cas les plus fréquents après résolution des refs :
+#   "str" & fact[...]  et fact[...] & "str".
+_CONCAT_STR_FACT_RE = re.compile(
+    r'("[^"]*")\s*&\s*(fact\[[^\]]+\]\.value)'
+)
+_CONCAT_FACT_STR_RE = re.compile(
+    r'(fact\[[^\]]+\]\.value)\s*&\s*("[^"]*")'
+)
+
 
 class ExcelConverterService:
     """Convertit les formules d'une feuille Excel en formules d'indicateurs.
@@ -711,6 +721,10 @@ class ExcelConverterService:
 
         # Post-processing 0 : ISBLANK(x) → x=""
         result = re.sub(r'\bISBLANK\(([^)]+)\)', r'\1=""', result)
+
+        # Post-processing 0b : x & y → CONCATENATE(x;y)
+        result = _CONCAT_STR_FACT_RE.sub(r'CONCATENATE(\1;\2)', result)
+        result = _CONCAT_FACT_STR_RE.sub(r'CONCATENATE(\1;\2)', result)
 
         # Post-processing 1 : SUM(fact...) → supprimer le wrapper SUM.
         # Si multi-plages (;), les joindre avec + en ne remplaçant que les ';'
