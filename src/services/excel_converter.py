@@ -101,11 +101,68 @@ class ExcelConverterService:
             data = json.load(fh)
 
         self.mapping: dict[str, dict] = data.get("mapping", {})
+        self.created_dimensions_path: Path = mapping_path.parent / "created_dimensions.json"
+        self.created_dimensions: list[str] = self._load_created_dimensions()
 
         # Index inverse : indicator_name → static flag (pour les entrées de cell_ref_map)
         self._indicator_static: dict[str, bool] = {}
         for entry in self.mapping.values():
             self._indicator_static[entry["indicator_name"]] = entry.get("static", False)
+
+    def _load_created_dimensions(self) -> list[str]:
+        """Charger les dimensions créées persistées (hors SRF_LEI)."""
+        if not self.created_dimensions_path.exists():
+            return []
+        try:
+            with open(self.created_dimensions_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            dims = data.get("dimensions", []) if isinstance(data, dict) else []
+            names = []
+            for d in dims:
+                if not isinstance(d, dict):
+                    continue
+                name = str(d.get("dimension_name", "")).strip()
+                if not name or name == "SRF_LEI":
+                    continue
+                if name not in names:
+                    names.append(name)
+            return names
+        except Exception:
+            logger.warning("Impossible de charger le registre dimensions: %s", self.created_dimensions_path)
+            return []
+
+    def refresh_created_dimensions(self) -> None:
+        """Rafraîchir les dimensions créées depuis le registre persisté."""
+        self.created_dimensions = self._load_created_dimensions()
+
+    def _make_fact_expr(
+        self,
+        indicator_name: str,
+        is_static: bool,
+        is_custom: bool,
+        include_srf_lei: bool = True,
+    ) -> str:
+        """Construire une expression fact[...] en injectant les dimensions créées.
+
+        - Statique: uniquement IndicatorName + endDate.
+        - Non statique: SRF_LEI si demandé.
+        - CUSTOM non statique: ajoute aussi chaque dimension créée (SRF_*=?).
+        """
+        if is_static:
+            return f'fact[IndicatorName="{indicator_name}"; endDate=?].value'
+
+        parts = [f'IndicatorName="{indicator_name}"']
+        if include_srf_lei:
+            parts.append("SRF_LEI=?")
+
+        if is_custom:
+            for dim_name in self.created_dimensions:
+                if dim_name == "SRF_LEI":
+                    continue
+                parts.append(f"{dim_name}=?")
+
+        parts.append("endDate=?")
+        return f"fact[{'; '.join(parts)}].value"
 
     # ─────────────────────────────────────────────────────────────────────────
     # API publique
@@ -784,9 +841,14 @@ class ExcelConverterService:
                 if abs_key not in cell_ref_map:
                     return m.group(0)  # Colonne sans indicateur → laisser tel quel
                 col_code = cell_ref_map[abs_key]
-                indicator_name, _ = self._resolve_col_code(col_code)
+                indicator_name, _, is_custom = self._resolve_col_code(col_code)
                 # Agrégation sur tous les LEI → sans SRF_LEI
-                return f'fact[IndicatorName="{indicator_name}"; endDate=?].value'
+                return self._make_fact_expr(
+                    indicator_name,
+                    is_static=False,
+                    is_custom=is_custom,
+                    include_srf_lei=False,
+                )
 
             # Cas D : plage multi-colonnes sur la ligne dynamique (T28:W28)
             # → somme de tous les facts avec SRF_LEI (une valeur par LEI)
@@ -800,8 +862,8 @@ class ExcelConverterService:
                     abs_key = f"${c}${institution_row}"
                     if abs_key in cell_ref_map:
                         col_code = cell_ref_map[abs_key]
-                        indicator_name, is_static = self._resolve_col_code(col_code)
-                        parts.append(_make_fact(indicator_name, is_static))
+                        indicator_name, is_static, is_custom = self._resolve_col_code(col_code)
+                        parts.append(self._make_fact_expr(indicator_name, is_static, is_custom))
                 if parts:
                     return " + ".join(parts)
                 return m.group(0)
@@ -814,9 +876,16 @@ class ExcelConverterService:
                     abs_key = f"${col1}${row}"
                     if abs_key in cell_ref_map:
                         col_code = cell_ref_map[abs_key]
-                        indicator_name, _ = self._resolve_col_code(col_code)
+                        indicator_name, _, is_custom = self._resolve_col_code(col_code)
                         # Indicateurs summary/ratio → pas de SRF_LEI
-                        parts.append(f'fact[IndicatorName="{indicator_name}"; endDate=?].value')
+                        parts.append(
+                            self._make_fact_expr(
+                                indicator_name,
+                                is_static=False,
+                                is_custom=is_custom,
+                                include_srf_lei=False,
+                            )
+                        )
                 if parts:
                     return " + ".join(parts)
 
@@ -839,19 +908,19 @@ class ExcelConverterService:
             abs_key = f"${col}${row}"
             if abs_key in cell_ref_map:
                 col_code = cell_ref_map[abs_key]
-                indicator_name, is_static = self._resolve_col_code(col_code)
+                indicator_name, is_static, is_custom = self._resolve_col_code(col_code)
                 # Forcer statique si la cellule n'est pas sur la ligne dynamique :
                 # les lignes de ratio/totaux au-dessus ne varient pas par LEI.
                 if row != dynamic_row:
                     is_static = True
-                return _make_fact(indicator_name, is_static)
+                return self._make_fact_expr(indicator_name, is_static, is_custom)
 
             # 2. Référence à la ligne de formules → résolution via en-tête de colonne
             if row == formula_row:
                 code = col_header.get(col)
                 if code:
-                    indicator_name, is_static = self._resolve_col_code(code)
-                    return _make_fact(indicator_name, is_static)
+                    indicator_name, is_static, is_custom = self._resolve_col_code(code)
+                    return self._make_fact_expr(indicator_name, is_static, is_custom)
 
             # 3. Non résolu → laisser tel quel
             return match.group(0)
@@ -862,16 +931,16 @@ class ExcelConverterService:
     # Utilitaires
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _resolve_col_code(self, col_code: str) -> tuple[str, bool]:
-        """Résoudre un code de colonne en (indicator_name, is_static).
+    def _resolve_col_code(self, col_code: str) -> tuple[str, bool, bool]:
+        """Résoudre un code de colonne en (indicator_name, is_static, is_custom).
 
         Si le code n'est pas dans le mapping, il est lui-même l'indicator_name
         (c'est un nouvel indicateur défini par la feuille en cours).
         """
         entry = self.mapping.get(col_code)
         if entry:
-            return entry["indicator_name"], entry.get("static", False)
-        return col_code, False  # Nouvel indicateur → dynamique par défaut
+            return entry["indicator_name"], entry.get("static", False), False
+        return col_code, False, True  # Nouvel indicateur CUSTOM → dynamique par défaut
 
     def _is_static(self, indicator_name: str) -> bool:
         """Vérifier si un indicator_name correspond à un indicateur statique."""
@@ -886,15 +955,6 @@ class ExcelConverterService:
 # ─────────────────────────────────────────────────────────────────────────────
 # Fonctions pures
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _make_fact(indicator_name: str, is_static: bool) -> str:
-    """Construire l'expression fact[...] selon le type d'indicateur."""
-    if is_static:
-        return f'fact[IndicatorName="{indicator_name}"; endDate=?].value'
-    return f'fact[IndicatorName="{indicator_name}"; SRF_LEI=?; endDate=?].value'
-
-
 # Regex pour détecter les références Excel brutes non résolues dans une formule convertie.
 # Matches : lettre(s) majuscules + chiffres, non précédés/suivis de lettres, chiffres, _  ou "
 _RAW_REF_RE = re.compile(r'(?<![A-Za-z0-9_"=])\$?[A-Z]{1,3}\$?\d{1,7}(?![A-Za-z0-9_"])')

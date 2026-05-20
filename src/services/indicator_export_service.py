@@ -34,10 +34,12 @@ class IndicatorExportService:
         with open(mapping_path, encoding="utf-8") as fh:
             data = json.load(fh)
         self.mapping: dict = data.get("mapping", {})
+        self.created_dimensions_path: Path = mapping_path.parent / "created_dimensions.json"
         # Charge les indicateurs RS/XBRL depuis les fichiers XML du répertoire indicators
         self.xml_indicator_index: dict[str, tuple[str, str]] = self._load_xml_indicators(
             details_path.parent.parent / "indicators"
         )
+        self.created_dimensions_registry: dict[str, list[dict]] = self._load_created_dimensions_registry()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Initialisation
@@ -103,6 +105,72 @@ class IndicatorExportService:
                     index.setdefault(col_code, (full_code, cls))
                 index[full_code] = (full_code, cls)
         return index
+
+    def _load_created_dimensions_registry(self) -> dict[str, list[dict]]:
+        """Charger le registre des dimensions créées par les tables CUSTOM."""
+        if not self.created_dimensions_path.exists():
+            return {"dimensions": []}
+        try:
+            with open(self.created_dimensions_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            dims = data.get("dimensions") if isinstance(data, dict) else None
+            if not isinstance(dims, list):
+                return {"dimensions": []}
+            return {"dimensions": dims}
+        except Exception:
+            logger.warning("Registre dimensions illisible: %s", self.created_dimensions_path)
+            return {"dimensions": []}
+
+    def _save_created_dimensions_registry(self) -> None:
+        self.created_dimensions_path.write_text(
+            json.dumps(self.created_dimensions_registry, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def register_created_dimensions(self, input_excel_path: Path, sheet_name: str) -> list[dict]:
+        """Détecter/persister les nouvelles dimensions créées sur une feuille.
+
+        Règle: une dimension est considérée "créée" si:
+          - DIMINPUTCODE est présent,
+          - l'indicateur associé est CUSTOM (non présent dans mapping),
+          - et la dimension n'est pas SRF_LEI.
+        """
+        found = self.collect_created_dimensions(input_excel_path, sheet_name)
+        known = self.created_dimensions_registry.get("dimensions", [])
+
+        known_keys = {
+            (d.get("dimension_name", ""), d.get("indicator_name", ""), d.get("created_in_sheet", ""))
+            for d in known
+        }
+
+        for d in found:
+            if not d.get("is_new_dimension"):
+                continue
+            dim_name = d.get("dimension_name", "")
+            if not dim_name or dim_name == "SRF_LEI":
+                continue
+
+            row = {
+                "dimension_name": dim_name,
+                "dimension_code": d.get("dimension_code", ""),
+                "indicator_name": d.get("indicator_name", ""),
+                "created_in_sheet": sheet_name,
+                "source_cell": d.get("source_cell", ""),
+                "source_file": input_excel_path.name,
+            }
+            key = (row["dimension_name"], row["indicator_name"], row["created_in_sheet"])
+            if key in known_keys:
+                continue
+            known.append(row)
+            known_keys.add(key)
+
+        self.created_dimensions_registry = {"dimensions": known}
+        self._save_created_dimensions_registry()
+        return known
+
+    def get_created_dimensions_registry(self) -> list[dict]:
+        """Retourner la liste persistée des dimensions créées."""
+        return list(self.created_dimensions_registry.get("dimensions", []))
 
     # ─────────────────────────────────────────────────────────────────────────
     # Résolution de codes
@@ -373,6 +441,7 @@ class IndicatorExportService:
         # On mémorise {row_original: {col_orig: cell_value}} pour les lignes #CELL
         # (les indices de lignes changent après delete_rows)
         cell_configs: dict[int, dict[int, str]] = {}
+        cell_indicator_candidates: dict[tuple[int, int], str] = {}
         dyn_row_orig: Optional[int] = None
         dyn_cell_row_orig: Optional[int] = None
         # Codes de colonnes issus de la ligne header juste avant #DATA_DYNAMIQUE
@@ -398,6 +467,17 @@ class IndicatorExportService:
                             "OUTPUTMCCOMP" in cv or "INPUTMCCOMP" in cv
                         ):
                             config[c] = cv
+                        # Mémoriser un code indicateur "fallback" depuis les lignes
+                        # data/header d'origine pour traiter les cas DIMINPUTCODE.
+                        for rr in (r - 1, r - 2):
+                            if rr < 1:
+                                continue
+                            candidate = ws.cell(rr, c).value
+                            if isinstance(candidate, str):
+                                cand = candidate.strip()
+                                if cand and _IND_CODE_RE.match(cand):
+                                    cell_indicator_candidates[(r, c)] = cand
+                                    break
                     if config:
                         cell_configs[r] = config
 
@@ -509,6 +589,14 @@ class IndicatorExportService:
                 # Si pas d'indicateur explicite, DIMINPUTCODE représente une dimension.
                 dim_m = _DIMINPUT_RE.search(cv_str)
                 if dim_m:
+                    # Cas particulier : certaines cellules techniques portent DIMINPUTCODE
+                    # mais la colonne correspond aussi à un indicateur CUSTOM à conserver.
+                    candidate_code = cell_indicator_candidates.get((orig_r, orig_c), "")
+                    if candidate_code:
+                        full, cls = self._resolve_full_name(candidate_code)
+                        _set_cell(ws, nr, nc, f"Indicator[{cls}]:{full};")
+                        continue
+
                     dim_name = self._dimension_name_from_code(dim_m.group(1))
                     _set_cell(ws, nr, nc, f"Dimension:{dim_name};")
                     continue

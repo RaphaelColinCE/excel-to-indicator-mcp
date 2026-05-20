@@ -631,6 +631,11 @@ async def handle_call_tool(
                     file_path = alt
                 else:
                     raise FileNotFoundError(f"Fichier introuvable: {args['file_name']}")
+
+            # Mettre à jour le registre des dimensions créées puis rafraîchir la conversion.
+            _indicator_exporter.register_created_dimensions(file_path, args["sheet_name"])
+            _excel_converter.refresh_created_dimensions()
+
             records = _excel_converter.convert_sheet(
                 file_path=file_path,
                 sheet_name=args["sheet_name"],
@@ -643,6 +648,7 @@ async def handle_call_tool(
                 "sheet_name": args["sheet_name"],
                 "count": len(records),
                 "indicators": records,
+                "known_created_dimensions": _indicator_exporter.get_created_dimensions_registry(),
             }
 
         elif name == "export_indicators_to_excel":
@@ -654,6 +660,9 @@ async def handle_call_tool(
                     file_path = alt
                 else:
                     raise FileNotFoundError(f"Fichier introuvable: {args['file_name']}")
+
+            _indicator_exporter.register_created_dimensions(file_path, args["sheet_name"])
+            _excel_converter.refresh_created_dimensions()
 
             multi_row = args.get("multi_row", False)
             if multi_row:
@@ -692,9 +701,11 @@ async def handle_call_tool(
                 "indicator_formula",
                 "status",
                 "creates_dimension",
+                "new_dimension_to_create",
                 "created_dimension_name",
                 "created_dimension_code",
                 "created_dimension_source_cell",
+                "dimension_creation_note",
             ]
             ws_out.append(headers)
             for rec in records:
@@ -704,23 +715,32 @@ async def handle_call_tool(
                 dim_entries = dims_by_indicator.get(rec["indicator_name"], [])
                 if dim_entries:
                     creates_dim = "YES"
+                    has_new_dim = any(bool(d.get("is_new_dimension")) for d in dim_entries)
+                    new_dim = "YES" if has_new_dim else ""
                     dim_names = ", ".join(d["dimension_name"] for d in dim_entries)
                     dim_codes = ", ".join(d["dimension_code"] for d in dim_entries)
                     dim_cells = ", ".join(d["source_cell"] for d in dim_entries)
+                    if has_new_dim:
+                        dim_note = f"Create dimension(s): {dim_names}"
+                    else:
+                        dim_note = ""
                 else:
                     creates_dim = ""
+                    new_dim = ""
                     dim_names = ""
                     dim_codes = ""
                     dim_cells = ""
+                    dim_note = ""
                 ws_out.append([rec["source_excel_sheet"], rec["source_cell"], rec["source_formula"],
                                 rec["indicator_name"], rec["indicator_formula"], status,
-                                creates_dim, dim_names, dim_codes, dim_cells])
+                                creates_dim, new_dim, dim_names, dim_codes, dim_cells, dim_note])
             wb_out.save(out_path)
             result = {
                 "output_file": str(out_path),
                 "count": len(records),
                 "indicators": [r["indicator_name"] for r in records],
                 "created_dimensions": created_dims,
+                "known_created_dimensions": _indicator_exporter.get_created_dimensions_registry(),
             }
 
         elif name == "convert_multi_row_sheet":
@@ -731,6 +751,10 @@ async def handle_call_tool(
                     file_path = alt
                 else:
                     raise FileNotFoundError(f"Fichier introuvable: {args['file_name']}")
+
+            _indicator_exporter.register_created_dimensions(file_path, args["sheet_name"])
+            _excel_converter.refresh_created_dimensions()
+
             records = _excel_converter.convert_multi_row_sheet(
                 file_path=file_path,
                 sheet_name=args["sheet_name"],
@@ -740,6 +764,7 @@ async def handle_call_tool(
                 "sheet_name": args["sheet_name"],
                 "count": len(records),
                 "indicators": records,
+                "known_created_dimensions": _indicator_exporter.get_created_dimensions_registry(),
             }
 
         elif name == "export_indicators_to_xml":
@@ -750,6 +775,9 @@ async def handle_call_tool(
                     file_path = alt
                 else:
                     raise FileNotFoundError(f"Fichier introuvable: {args['file_name']}")
+
+            _indicator_exporter.register_created_dimensions(file_path, args["sheet_name"])
+            _excel_converter.refresh_created_dimensions()
 
             multi_row = args.get("multi_row", False)
             if multi_row:
@@ -775,6 +803,7 @@ async def handle_call_tool(
                 "output_file": str(out_path),
                 "count": count,
                 "indicators": [r["indicator_name"] for r in records],
+                "known_created_dimensions": _indicator_exporter.get_created_dimensions_registry(),
             }
 
         elif name == "export_analysis_table_spec":
@@ -787,6 +816,7 @@ async def handle_call_tool(
                     raise FileNotFoundError(f"Fichier introuvable: {args['file_name']}")
 
             out_path = settings.OUTPUT_DIR / args["output_file_name"]
+            _indicator_exporter.register_created_dimensions(file_path, args["sheet_name"])
             created_dims = _indicator_exporter.collect_created_dimensions(
                 input_excel_path=file_path,
                 sheet_name=args["sheet_name"],
@@ -803,6 +833,7 @@ async def handle_call_tool(
                 "data_columns": n_cols,
                 "sheet_name": args["sheet_name"],
                 "created_dimensions": created_dims,
+                "known_created_dimensions": _indicator_exporter.get_created_dimensions_registry(),
             }
 
         else:
