@@ -348,6 +348,12 @@ async def handle_list_tools() -> list[types.Tool]:
                                        "Dans ce mode, header_row et formula_row sont ignorés.",
                         "default": False,
                     },
+                    "disable_created_dimension_filters": {
+                        "type": "boolean",
+                        "description": "Si true, n'injecte pas les dimensions créées (ex: SRF_CM, SRF_RET) "
+                                       "dans les formules fact[...] pour cet export.",
+                        "default": False,
+                    },
                 },
                 "required": ["file_name", "sheet_name", "output_file_name"],
             },
@@ -411,6 +417,12 @@ async def handle_list_tools() -> list[types.Tool]:
                         "type": "boolean",
                         "description": "Si true, utilise le mode multi-lignes (DATA/CELL alternées). "
                                        "header_row et formula_row sont ignorés dans ce mode.",
+                        "default": False,
+                    },
+                    "disable_created_dimension_filters": {
+                        "type": "boolean",
+                        "description": "Si true, n'injecte pas les dimensions créées (ex: SRF_CM, SRF_RET) "
+                                       "dans les formules fact[...] pour cet export.",
                         "default": False,
                     },
                     "data_types": {
@@ -663,20 +675,28 @@ async def handle_call_tool(
 
             _indicator_exporter.register_created_dimensions(file_path, args["sheet_name"])
             _excel_converter.refresh_created_dimensions()
+            disable_dim_filters = bool(args.get("disable_created_dimension_filters", False))
+            saved_dims = list(getattr(_excel_converter, "created_dimensions", []))
+            if disable_dim_filters:
+                _excel_converter.created_dimensions = []
 
-            multi_row = args.get("multi_row", False)
-            if multi_row:
-                records = _excel_converter.convert_multi_row_sheet(
-                    file_path=file_path,
-                    sheet_name=args["sheet_name"],
-                )
-            else:
-                records = _excel_converter.convert_sheet(
-                    file_path=file_path,
-                    sheet_name=args["sheet_name"],
-                    header_row=args.get("header_row", 25),
-                    formula_row=args.get("formula_row", 26),
-                )
+            try:
+                multi_row = args.get("multi_row", False)
+                if multi_row:
+                    records = _excel_converter.convert_multi_row_sheet(
+                        file_path=file_path,
+                        sheet_name=args["sheet_name"],
+                    )
+                else:
+                    records = _excel_converter.convert_sheet(
+                        file_path=file_path,
+                        sheet_name=args["sheet_name"],
+                        header_row=args.get("header_row", 25),
+                        formula_row=args.get("formula_row", 26),
+                    )
+            finally:
+                if disable_dim_filters:
+                    _excel_converter.created_dimensions = saved_dims
 
             from src.services.excel_converter import formula_status as _formula_status
             created_dims = _indicator_exporter.collect_created_dimensions(
@@ -741,6 +761,7 @@ async def handle_call_tool(
                 "indicators": [r["indicator_name"] for r in records],
                 "created_dimensions": created_dims,
                 "known_created_dimensions": _indicator_exporter.get_created_dimensions_registry(),
+                "disable_created_dimension_filters": disable_dim_filters,
             }
 
         elif name == "convert_multi_row_sheet":
@@ -778,20 +799,28 @@ async def handle_call_tool(
 
             _indicator_exporter.register_created_dimensions(file_path, args["sheet_name"])
             _excel_converter.refresh_created_dimensions()
+            disable_dim_filters = bool(args.get("disable_created_dimension_filters", False))
+            saved_dims = list(getattr(_excel_converter, "created_dimensions", []))
+            if disable_dim_filters:
+                _excel_converter.created_dimensions = []
 
-            multi_row = args.get("multi_row", False)
-            if multi_row:
-                records = _excel_converter.convert_multi_row_sheet(
-                    file_path=file_path,
-                    sheet_name=args["sheet_name"],
-                )
-            else:
-                records = _excel_converter.convert_sheet(
-                    file_path=file_path,
-                    sheet_name=args["sheet_name"],
-                    header_row=args.get("header_row", 25),
-                    formula_row=args.get("formula_row", 26),
-                )
+            try:
+                multi_row = args.get("multi_row", False)
+                if multi_row:
+                    records = _excel_converter.convert_multi_row_sheet(
+                        file_path=file_path,
+                        sheet_name=args["sheet_name"],
+                    )
+                else:
+                    records = _excel_converter.convert_sheet(
+                        file_path=file_path,
+                        sheet_name=args["sheet_name"],
+                        header_row=args.get("header_row", 25),
+                        formula_row=args.get("formula_row", 26),
+                    )
+            finally:
+                if disable_dim_filters:
+                    _excel_converter.created_dimensions = saved_dims
 
             out_path = settings.OUTPUT_DIR / args["output_file_name"]
             count = _indicator_exporter.export_to_xml(
@@ -804,6 +833,7 @@ async def handle_call_tool(
                 "count": count,
                 "indicators": [r["indicator_name"] for r in records],
                 "known_created_dimensions": _indicator_exporter.get_created_dimensions_registry(),
+                "disable_created_dimension_filters": disable_dim_filters,
             }
 
         elif name == "export_analysis_table_spec":
