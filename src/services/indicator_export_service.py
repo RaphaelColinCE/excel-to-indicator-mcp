@@ -19,6 +19,8 @@ logger = logging.getLogger("mcp_server")
 
 # Regex pour extraire le code d'un OUTPUTMCCOMP/INPUTMCCOMP dans une cellule #CELL
 _MC_COMP_RE = re.compile(r"(?:OUTPUT|INPUT)MCCOMP:\{[^}]*\}([^;\n]+)")
+_DIMINPUT_RE = re.compile(r"DIMINPUTCODE:\s*<([^>]+)>", re.IGNORECASE)
+_IND_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]+$")
 
 # Correspondance type numérique (IndicatorsDetails.xlsx) → chaîne XML
 _TYPE_INT_MAP: dict[int, str] = {0: "MONETARY", 2: "REAL", 4: "DATE", 5: "TEXT"}
@@ -145,6 +147,92 @@ class IndicatorExportService:
             return "Dimension:SRF_LEI;"
         full, cls = self._resolve_full_name(code)
         return f"Indicator[{cls}]:{full};"
+
+    @staticmethod
+    def _dimension_name_from_code(dim_code: str) -> str:
+        """Convertir un code technique de dimension (<EC>, <CM>, ...) vers SRF_*.
+
+        Convention actuelle :
+          - EC -> SRF_LEI (dimension entité existante)
+          - X  -> SRF_X   (pour toute autre dimension métier)
+        """
+        code = dim_code.strip().upper()
+        if code == "EC":
+            return "SRF_LEI"
+        return f"SRF_{code}"
+
+    def collect_created_dimensions(self, input_excel_path: Path, sheet_name: str) -> list[dict]:
+        """Lister les dimensions créées via DIMINPUTCODE sur les lignes techniques.
+
+        Retourne des dicts avec:
+          - source_excel_sheet
+          - source_cell
+          - indicator_name
+          - dimension_code
+          - dimension_name
+          - is_new_dimension
+        """
+        wb = openpyxl.load_workbook(input_excel_path, keep_links=False)
+        if sheet_name not in wb.sheetnames:
+            return []
+        ws = wb[sheet_name]
+
+        dims: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        for r in range(1, ws.max_row + 1):
+            if ws.cell(r, 1).value != "#CELL":
+                continue
+
+            data_row = r - 1
+            header_row = r - 2
+
+            for c in range(2, ws.max_column + 1):
+                cv = ws.cell(r, c).value
+                if not isinstance(cv, str):
+                    continue
+
+                dim_m = _DIMINPUT_RE.search(cv)
+                if not dim_m:
+                    continue
+
+                dim_code = dim_m.group(1).strip().upper()
+                dim_name = self._dimension_name_from_code(dim_code)
+
+                # Résoudre le code indicateur lié à cette colonne.
+                indicator_code = ""
+                mc_m = _MC_COMP_RE.search(cv)
+                if mc_m:
+                    indicator_code = mc_m.group(1).strip().rstrip(";")
+                else:
+                    for rr in (data_row, header_row):
+                        if rr < 1:
+                            continue
+                        candidate = ws.cell(rr, c).value
+                        if isinstance(candidate, str):
+                            cand = candidate.strip()
+                            if cand and _IND_CODE_RE.match(cand):
+                                indicator_code = cand
+                                break
+
+                key = (indicator_code, dim_code, dim_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                is_new = bool(indicator_code) and indicator_code not in self.mapping
+                dims.append(
+                    {
+                        "source_excel_sheet": sheet_name,
+                        "source_cell": ws.cell(r, c).coordinate,
+                        "indicator_name": indicator_code,
+                        "dimension_code": dim_code,
+                        "dimension_name": dim_name,
+                        "is_new_dimension": is_new,
+                    }
+                )
+
+        return dims
 
     # ─────────────────────────────────────────────────────────────────────────
     # Export 1 : XML
@@ -400,11 +488,6 @@ class IndicatorExportService:
             for orig_c, cv_str in config.items():
                 nc = new_col(orig_c)
 
-                # DIMINPUTCODE → dimension LEI
-                if "DIMINPUTCODE" in cv_str:
-                    _set_cell(ws, nr, nc, "Dimension:SRF_LEI;")
-                    continue
-
                 # Pour la ligne #CELL dynamique uniquement : utiliser en priorité
                 # le code de la ligne header (#DATA juste avant #DATA_DYNAMIQUE)
                 # Ex: S0DE_DGS_2A3 → Indicator[XBRL]:CMGT_dgs__C02A3$;
@@ -417,13 +500,20 @@ class IndicatorExportService:
 
                 # Extraction du code via OUTPUTMCCOMP / INPUTMCCOMP
                 mc_m = _MC_COMP_RE.search(cv_str)
-                if not mc_m:
-                    _set_cell(ws, nr, nc, None)
+                if mc_m:
+                    comp_code = mc_m.group(1).strip().rstrip(";")
+                    full, cls = self._resolve_full_name(comp_code)
+                    _set_cell(ws, nr, nc, f"Indicator[{cls}]:{full};")
                     continue
 
-                comp_code = mc_m.group(1).strip().rstrip(";")
-                full, cls = self._resolve_full_name(comp_code)
-                _set_cell(ws, nr, nc, f"Indicator[{cls}]:{full};")
+                # Si pas d'indicateur explicite, DIMINPUTCODE représente une dimension.
+                dim_m = _DIMINPUT_RE.search(cv_str)
+                if dim_m:
+                    dim_name = self._dimension_name_from_code(dim_m.group(1))
+                    _set_cell(ws, nr, nc, f"Dimension:{dim_name};")
+                    continue
+
+                _set_cell(ws, nr, nc, None)
 
         # ── 9. Normaliser tous les tags #DATA* → #DATA dans toute la feuille ──
         # Exception : #DATA_DYNAMIQUE → None (la ligne verte n'a pas de tag en col A)

@@ -670,6 +670,17 @@ async def handle_call_tool(
                 )
 
             from src.services.excel_converter import formula_status as _formula_status
+            created_dims = _indicator_exporter.collect_created_dimensions(
+                input_excel_path=file_path,
+                sheet_name=args["sheet_name"],
+            )
+            dims_by_indicator: dict[str, list[dict]] = {}
+            for d in created_dims:
+                ind = d.get("indicator_name", "")
+                if not ind:
+                    continue
+                dims_by_indicator.setdefault(ind, []).append(d)
+
             out_path = settings.OUTPUT_DIR / args["output_file_name"]
             wb_out = _openpyxl.Workbook()
             ws_out = wb_out.active
@@ -680,19 +691,36 @@ async def handle_call_tool(
                 "indicator_name",
                 "indicator_formula",
                 "status",
+                "creates_dimension",
+                "created_dimension_name",
+                "created_dimension_code",
+                "created_dimension_source_cell",
             ]
             ws_out.append(headers)
             for rec in records:
                 status = _formula_status(rec["indicator_formula"])
                 if rec.get("intermediate"):
                     status = status + "_INT"
+                dim_entries = dims_by_indicator.get(rec["indicator_name"], [])
+                if dim_entries:
+                    creates_dim = "YES"
+                    dim_names = ", ".join(d["dimension_name"] for d in dim_entries)
+                    dim_codes = ", ".join(d["dimension_code"] for d in dim_entries)
+                    dim_cells = ", ".join(d["source_cell"] for d in dim_entries)
+                else:
+                    creates_dim = ""
+                    dim_names = ""
+                    dim_codes = ""
+                    dim_cells = ""
                 ws_out.append([rec["source_excel_sheet"], rec["source_cell"], rec["source_formula"],
-                                rec["indicator_name"], rec["indicator_formula"], status])
+                                rec["indicator_name"], rec["indicator_formula"], status,
+                                creates_dim, dim_names, dim_codes, dim_cells])
             wb_out.save(out_path)
             result = {
                 "output_file": str(out_path),
                 "count": len(records),
                 "indicators": [r["indicator_name"] for r in records],
+                "created_dimensions": created_dims,
             }
 
         elif name == "convert_multi_row_sheet":
@@ -759,6 +787,10 @@ async def handle_call_tool(
                     raise FileNotFoundError(f"Fichier introuvable: {args['file_name']}")
 
             out_path = settings.OUTPUT_DIR / args["output_file_name"]
+            created_dims = _indicator_exporter.collect_created_dimensions(
+                input_excel_path=file_path,
+                sheet_name=args["sheet_name"],
+            )
             n_cols = _indicator_exporter.export_analysis_spec(
                 input_excel_path=file_path,
                 sheet_name=args["sheet_name"],
@@ -770,6 +802,7 @@ async def handle_call_tool(
                 "output_file": str(out_path),
                 "data_columns": n_cols,
                 "sheet_name": args["sheet_name"],
+                "created_dimensions": created_dims,
             }
 
         else:
