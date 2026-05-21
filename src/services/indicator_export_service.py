@@ -229,6 +229,31 @@ class IndicatorExportService:
             return "SRF_LEI"
         return f"SRF_{code}"
 
+    @staticmethod
+    def _make_label_short(label: str, max_len: int = 8) -> str:
+        """Construire un code court à partir d'un label (alphanum, uppercase)."""
+        clean = re.sub(r"[^A-Za-z0-9]", "", label)
+        result = clean[:max_len].upper()
+        return result if result else "X"
+
+    @staticmethod
+    def _find_cell_label_in_ws(ws, row_num: int, col_idx: int) -> Optional[str]:
+        """Remonter les lignes pour trouver un label textuel pour une colonne donnée."""
+        for dr in range(1, 12):
+            r = row_num - dr
+            if r < 1:
+                break
+            v = ws.cell(row=r, column=col_idx).value
+            if v is None:
+                continue
+            sv = str(v).strip()
+            if not sv or sv.startswith("#") or sv.startswith("="):
+                continue
+            if _IND_CODE_RE.match(sv):
+                continue
+            return sv
+        return None
+
     def collect_created_dimensions(self, input_excel_path: Path, sheet_name: str) -> list[dict]:
         """Lister les dimensions créées via DIMINPUTCODE sur les lignes techniques.
 
@@ -322,6 +347,13 @@ class IndicatorExportService:
         Returns:
             Nombre d'indicateurs exportés.
         """
+        # Récupérer la liste des indicateurs déjà créés dans les tables précédentes
+        already_created = set()
+        for dim in self.get_created_dimensions_registry():
+            name = dim.get("indicator_name")
+            if name:
+                already_created.add(name)
+
         lines = [
             '<?xml version="1.0" encoding="utf-8"?>',
             '<Indicators xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
@@ -332,8 +364,12 @@ class IndicatorExportService:
         # Regex pour détecter les références Excel brutes non résolues (ex: G22, CP18)
         _raw_cell_re = re.compile(r'(?<![A-Za-z0-9_"=])\$?[A-Z]{1,3}\$?\d{1,7}(?![A-Za-z0-9_"])')
 
+        exported_count = 0
         for rec in records:
             code = rec["indicator_name"]
+            # Ne pas réexporter les indicateurs déjà créés
+            if code in already_created:
+                continue
             formula = rec["indicator_formula"]
             detail = self.indicator_details.get(code, {})
             label_raw = detail.get("label", code)
@@ -376,6 +412,7 @@ class IndicatorExportService:
                 f"      <Formula>{formula_esc}</Formula>",
                 "    </Indicator>",
             ]
+            exported_count += 1
 
         lines += [
             "  </CustomIndicators>",
@@ -386,8 +423,8 @@ class IndicatorExportService:
         ]
 
         output_path.write_text("\n".join(lines), encoding="utf-8")
-        logger.info("XML exporté: %s (%d indicateurs)", output_path.name, len(records))
-        return len(records)
+        logger.info("XML exporté: %s (%d indicateurs)", output_path.name, exported_count)
+        return exported_count
 
     # ─────────────────────────────────────────────────────────────────────────
     # Export 2 : Spécification Excel
@@ -442,11 +479,17 @@ class IndicatorExportService:
         # (les indices de lignes changent après delete_rows)
         cell_configs: dict[int, dict[int, str]] = {}
         cell_indicator_candidates: dict[tuple[int, int], str] = {}
+        auto_formula_indicators: dict[tuple[int, int], str] = {}
         dyn_row_orig: Optional[int] = None
         dyn_cell_row_orig: Optional[int] = None
         # Codes de colonnes issus de la ligne header juste avant #DATA_DYNAMIQUE
         # (ex: S0DE_DGS_2A3, S0DE_LOI_IPS3) → source de vérité pour les indicateurs
         header_col_codes: dict[int, str] = {}
+        used_indicator_names: set[str] = set()
+        for entry in self.mapping.values():
+            name = entry.get("indicator_name")
+            if isinstance(name, str) and name:
+                used_indicator_names.add(name)
 
         for r in range(1, ws.max_row + 1):
             val_a = ws.cell(r, 1).value
@@ -463,10 +506,18 @@ class IndicatorExportService:
                     config: dict[int, str] = {}
                     for c in range(2, ws.max_column + 1):
                         cv = ws.cell(r, c).value
-                        if cv and isinstance(cv, str) and (
-                            "OUTPUTMCCOMP" in cv or "INPUTMCCOMP" in cv
-                        ):
+                        data_v = ws.cell(r - 1, c).value if r - 1 >= 1 else None
+                        has_formula = isinstance(data_v, str) and data_v.startswith("=")
+
+                        if isinstance(cv, str) and cv.strip():
+                            # Conserver toute cellule #CELL textuelle pour éviter
+                            # de laisser des propriétés techniques invalides dans la spec.
                             config[c] = cv
+                        elif has_formula:
+                            # Colonne sans config explicite mais avec formule sur la ligne
+                            # DATA: on doit afficher l'indicateur généré (intermédiaire).
+                            config[c] = "__AUTO_FORMULA__"
+
                         # Mémoriser un code indicateur "fallback" depuis les lignes
                         # data/header d'origine pour traiter les cas DIMINPUTCODE.
                         for rr in (r - 1, r - 2):
@@ -478,6 +529,21 @@ class IndicatorExportService:
                                 if cand and _IND_CODE_RE.match(cand):
                                     cell_indicator_candidates[(r, c)] = cand
                                     break
+
+                        # Générer un nom d'indicateur intermédiaire pour les cellules
+                        # formule sans code explicite.
+                        if has_formula and (r, c) not in cell_indicator_candidates:
+                            label = self._find_cell_label_in_ws(ws, r - 1, c)
+                            short = self._make_label_short(label, 8) if label else ws.cell(r, c).column_letter
+                            base_name = f"{sheet_name}_{short}_$"
+                            name = base_name
+                            idx = 2
+                            while name in used_indicator_names:
+                                name = f"{base_name}{idx}"
+                                idx += 1
+                            used_indicator_names.add(name)
+                            auto_formula_indicators[(r, c)] = name
+
                     if config:
                         cell_configs[r] = config
 
@@ -592,6 +658,8 @@ class IndicatorExportService:
                     # Cas particulier : certaines cellules techniques portent DIMINPUTCODE
                     # mais la colonne correspond aussi à un indicateur CUSTOM à conserver.
                     candidate_code = cell_indicator_candidates.get((orig_r, orig_c), "")
+                    if not candidate_code:
+                        candidate_code = auto_formula_indicators.get((orig_r, orig_c), "")
                     if candidate_code:
                         full, cls = self._resolve_full_name(candidate_code)
                         _set_cell(ws, nr, nc, f"Indicator[{cls}]:{full};")
@@ -599,6 +667,13 @@ class IndicatorExportService:
 
                     dim_name = self._dimension_name_from_code(dim_m.group(1))
                     _set_cell(ws, nr, nc, f"Dimension:{dim_name};")
+                    continue
+
+                # Formule sans propriété reconnue: afficher l'indicateur auto-généré.
+                auto_code = auto_formula_indicators.get((orig_r, orig_c), "")
+                if auto_code:
+                    full, cls = self._resolve_full_name(auto_code)
+                    _set_cell(ws, nr, nc, f"Indicator[{cls}]:{full};")
                     continue
 
                 _set_cell(ws, nr, nc, None)
