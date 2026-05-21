@@ -444,7 +444,7 @@ class IndicatorExportService:
           1. Supprimer les lignes violettes (FF9400D3) et la ligne rouge (FF800000)
           2. Supprimer la colonne B (violet en ligne 1)
           3. Remplacer les cellules orange (#CELL) avec la notation Indicator[...]
-          4. Transformer la ligne #DATA_DYNAMIQUE en ligne verte Dynamic:SRF_LEI;
+          4. Transformer la ligne #DATA_DYNAMIQUE / #DATA_DYNAMIC en ligne verte Dynamic:SRF_LEI;
           5. Ajouter la feuille #TEMPLATE
 
         Seuls les cellules orange et vertes sont modifiées.
@@ -494,7 +494,7 @@ class IndicatorExportService:
         for r in range(1, ws.max_row + 1):
             val_a = ws.cell(r, 1).value
             if isinstance(val_a, str):
-                if val_a == "#DATA_DYNAMIQUE":
+                if val_a in ("#DATA_DYNAMIQUE", "#DATA_DYNAMIC"):
                     dyn_row_orig = r
                     # La ligne juste au-dessus est la ligne header avec les codes indicateurs
                     prev_r = r - 1
@@ -688,7 +688,7 @@ class IndicatorExportService:
                 val = cell.value
                 if not isinstance(val, str):
                     continue
-                if val == "#DATA_DYNAMIQUE":
+                if val in ("#DATA_DYNAMIQUE", "#DATA_DYNAMIC"):
                     cell.value = None   # ligne verte → pas de tag
                 elif val.startswith("#DATA") and val != "#DATA":
                     cell.value = "#DATA"
