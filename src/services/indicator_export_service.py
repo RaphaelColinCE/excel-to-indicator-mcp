@@ -25,6 +25,27 @@ _IND_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]+$")
 # Correspondance type numérique (IndicatorsDetails.xlsx) → chaîne XML
 _TYPE_INT_MAP: dict[int, str] = {0: "MONETARY", 2: "REAL", 4: "DATE", 5: "TEXT"}
 
+# Ordre métier par défaut des étapes de génération.
+# Les entrées sont des préfixes de code tableau (S2R* = même étape, ex: S2RLCR/S2RACE).
+_DEFAULT_TABLE_STAGE_ORDER: tuple[str, ...] = (
+    "S1CRU1",
+    "S1CRU2",
+    "S1CRUF",
+    "S2R",
+    "S2I",
+    "S2D",
+    "S3",
+    "S454S",
+    "S4I",
+    "S4IIAR",
+    "S4IIAB",
+    "S4IIAA",
+    "S5P",
+    "S5F",
+    "S6D",
+    "S6G",
+)
+
 
 class IndicatorExportService:
     """Service d'export des indicateurs vers XML et spécification Excel."""
@@ -35,6 +56,8 @@ class IndicatorExportService:
             data = json.load(fh)
         self.mapping: dict = data.get("mapping", {})
         self.created_dimensions_path: Path = mapping_path.parent / "created_dimensions.json"
+        self.table_stage_order_path: Path = mapping_path.parent / "table_stage_order.json"
+        self.table_stage_order: tuple[str, ...] = self._load_table_stage_order()
         # Charge les indicateurs RS/XBRL depuis les fichiers XML du répertoire indicators
         self.xml_indicator_index: dict[str, tuple[str, str]] = self._load_xml_indicators(
             details_path.parent.parent / "indicators"
@@ -127,6 +150,45 @@ class IndicatorExportService:
             encoding="utf-8",
         )
 
+    def _load_table_stage_order(self) -> tuple[str, ...]:
+        """Charger l'ordre d'étapes depuis table_stage_order.json.
+
+        Formats supportés:
+          - {"stage_order": ["S1CRU1", "S1CRU2", ...]}
+          - ["S1CRU1", "S1CRU2", ...]
+        """
+        if not self.table_stage_order_path.exists():
+            return _DEFAULT_TABLE_STAGE_ORDER
+
+        try:
+            with open(self.table_stage_order_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+
+            if isinstance(data, dict):
+                raw_order = data.get("stage_order", [])
+            elif isinstance(data, list):
+                raw_order = data
+            else:
+                raw_order = []
+
+            cleaned: list[str] = []
+            for item in raw_order:
+                if not isinstance(item, str):
+                    continue
+                code = item.strip().upper()
+                if not code:
+                    continue
+                if code not in cleaned:
+                    cleaned.append(code)
+
+            if not cleaned:
+                return _DEFAULT_TABLE_STAGE_ORDER
+
+            return tuple(cleaned)
+        except Exception:
+            logger.warning("Ordre d'etapes illisible: %s", self.table_stage_order_path)
+            return _DEFAULT_TABLE_STAGE_ORDER
+
     def register_created_dimensions(self, input_excel_path: Path, sheet_name: str) -> list[dict]:
         """Détecter/persister les nouvelles dimensions créées sur une feuille.
 
@@ -208,6 +270,20 @@ class IndicatorExportService:
             if code.startswith(xbrl_prefix):
                 return code, "XBRL"
         return code, "CUSTOM"
+
+    @staticmethod
+    def _extract_table_code(sheet_name: str) -> str:
+        """Extraire le code tableau depuis un nom de feuille (ex: 'S2DLCR - LCR')."""
+        m = re.match(r"^([A-Z0-9]+)", str(sheet_name).strip().upper())
+        return m.group(1) if m else str(sheet_name).strip().upper()
+
+    def _stage_index(self, sheet_name: str) -> Optional[int]:
+        """Retourner l'index d'étape pour un tableau selon la config chargée."""
+        table_code = self._extract_table_code(sheet_name)
+        for idx, prefix in enumerate(self.table_stage_order):
+            if table_code.startswith(prefix):
+                return idx
+        return None
 
     def _indicator_cell(self, code: str, is_dimension: bool = False) -> str:
         """Générer la chaîne `Indicator[TYPE]:name;` ou `Dimension:SRF_LEI;`."""
@@ -347,12 +423,18 @@ class IndicatorExportService:
         Returns:
             Nombre d'indicateurs exportés.
         """
-        # Récupérer la liste des indicateurs déjà créés dans les tables précédentes
-        already_created = set()
+        # Index des indicateurs déjà créés : indicator_name -> {created_in_sheet...}
+        # On filtre uniquement ceux créés à une étape antérieure (ordre métier),
+        # ce qui permet les branches parallèles (ex: S2R*).
+        created_in_sheets_by_indicator: dict[str, set[str]] = {}
         for dim in self.get_created_dimensions_registry():
             name = dim.get("indicator_name")
-            if name:
-                already_created.add(name)
+            created_in_sheet = dim.get("created_in_sheet")
+            if not name:
+                continue
+            created_in_sheets_by_indicator.setdefault(str(name), set())
+            if created_in_sheet:
+                created_in_sheets_by_indicator[str(name)].add(str(created_in_sheet))
 
         lines = [
             '<?xml version="1.0" encoding="utf-8"?>',
@@ -367,9 +449,26 @@ class IndicatorExportService:
         exported_count = 0
         for rec in records:
             code = rec["indicator_name"]
-            # Ne pas réexporter les indicateurs déjà créés
-            if code in already_created:
+            sheet_name = rec.get("source_excel_sheet", "")
+            created_sheets = created_in_sheets_by_indicator.get(code, set())
+
+            # Ne pas réexporter un indicateur déjà créé à une étape antérieure.
+            # Si la source est dans la même étape (tables parallèles), on autorise.
+            current_stage = self._stage_index(sheet_name)
+            skip_indicator = False
+            for created_sheet in created_sheets:
+                previous_stage = self._stage_index(created_sheet)
+                if current_stage is not None and previous_stage is not None:
+                    if previous_stage < current_stage:
+                        skip_indicator = True
+                        break
+                elif created_sheet == sheet_name:
+                    # Même feuille: on garde.
+                    continue
+
+            if skip_indicator:
                 continue
+
             formula = rec["indicator_formula"]
             detail = self.indicator_details.get(code, {})
             label_raw = detail.get("label", code)
