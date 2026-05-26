@@ -267,7 +267,7 @@ class ExcelConverterService:
 
             formula_text = str(raw)[1:]  # retirer le "="
             converted = self._convert_formula(
-                formula_text, col_header, cell_ref_map, formula_row
+                formula_text, col_header, cell_ref_map, formula_row, ws=ws
             )
 
             results.append(
@@ -379,7 +379,7 @@ class ExcelConverterService:
                 formula_text = str(raw)[1:]
                 converted = self._convert_formula(
                     formula_text, row_col_header, cell_ref_map, row_num,
-                    institution_row=institution_row,
+                    institution_row=institution_row, ws=ws,
                 )
                 results.append(
                     {
@@ -740,6 +740,7 @@ class ExcelConverterService:
         cell_ref_map: dict[str, str],
         formula_row: int,
         institution_row: Optional[int] = None,
+        ws=None,
     ) -> str:
         """Remplacer les références de cellules Excel par des expressions fact[...].
 
@@ -767,7 +768,7 @@ class ExcelConverterService:
         converted_segments: list[str] = []
         for i, segment in enumerate(segments):
             converted = self._replace_cell_refs(
-                segment, col_header, cell_ref_map, formula_row, institution_row
+                segment, col_header, cell_ref_map, formula_row, institution_row, ws
             )
             converted = converted.replace(",", ";")
             converted_segments.append(converted)
@@ -818,6 +819,7 @@ class ExcelConverterService:
         cell_ref_map: dict[str, str],
         formula_row: int,
         institution_row: Optional[int] = None,
+        ws=None,
     ) -> str:
         """Substituer les références de cellules dans un segment non-littéral.
 
@@ -922,7 +924,24 @@ class ExcelConverterService:
                     indicator_name, is_static, is_custom = self._resolve_col_code(code)
                     return self._make_fact_expr(indicator_name, is_static, is_custom)
 
-            # 3. Non résolu → laisser tel quel
+            # 3. Référence non mappée vers une cellule scalaire (constante paramètre)
+            #    Ex: DE$21=1, DF$21=2... -> injecter la valeur littérale.
+            if ws is not None:
+                v = ws.cell(row=row, column=openpyxl.utils.column_index_from_string(col)).value
+                if isinstance(v, bool):
+                    return match.group(0)
+                if isinstance(v, (int, float)):
+                    if isinstance(v, float) and v.is_integer():
+                        return str(int(v))
+                    return str(v)
+                if isinstance(v, str):
+                    sv = v.strip()
+                    if re.fullmatch(r"[+-]?\d+", sv):
+                        return sv
+                    if re.fullmatch(r"[+-]?\d*\.\d+", sv):
+                        return sv
+
+            # 4. Non résolu → laisser tel quel
             return match.group(0)
 
         return _CELL_REF_RE.sub(_sub, text)
